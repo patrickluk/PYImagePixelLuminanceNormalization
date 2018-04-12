@@ -6,7 +6,7 @@ from colorsys import hsv_to_rgb, rgb_to_hsv
 def normalize(pixel):
 	pixel = list(pixel[0 : 3]) # remove alpha component
 	
-	 # turn a black pixel to something that is not black to avoid division by zero
+	# turn a black pixel to something that is not black to avoid division by zero
 	if sum(pixel) == 0:
 		pixel = [1, 1, 1]
 
