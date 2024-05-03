@@ -1,97 +1,100 @@
-from PIL import Image # py -m pip install Pillow
-import numpy as np # py -m pip install numpy
-from colorsys import hsv_to_rgb, rgb_to_hsv # for converting colors
-from random import randrange # for generating random numbers
+from PIL import Image  # py -m pip install Pillow
+import numpy as np  # py -m pip install numpy
+import cv2
 
-# things that you can change
-r, g, b = 0.299, 0.587, 0.114 # rgb luminance weights, sum should be equal to 1
-imagePath = "image.png" # image path.  Supports several file formats such as .jpg, .png etc.
+# image path.  Supports several file formats such as .jpg, .png etc.
+IMAGE_PATH = "image.png"
 
-# function to return the luminance value of a pixel (0 < R, G, B < 255)
-def luminance(pixel):
-	return (r * pixel[0] + g * pixel[1] + b * pixel[2]) / 255.0
+# BGR luminance weights, sum should be equal to 1 for all channels
+LUMINANCE_WEIGHTS = np.array([0.114, 0.587, 0.299])
 
-# function to normalize the grayscale luminance value of a pixel
-def normalize(pixel, k): # pixel RGB info, target luminance
-	pixel = list(pixel[0 : 3]) # remove alpha component
-	
-	# turn a black pixel to something that is not black to avoid division by zero
-	if sum(pixel) == 0:
-		pixel = [1, 1, 1]
-	
-	RGB = [x / 255.0 for x in pixel] # pixel in RGB
-	HSV = list(rgb_to_hsv(*RGB)) # pixel in HSV
-	
-	luminance = r * RGB[0] + g * RGB[1] + b * RGB[2] # luminance of the pixel
-	newHSV = [HSV[0], HSV[1], HSV[2] * k / luminance] # get new pixel HSV value by normalizing the luminance
-	
-	# make sure Value is capped to 1, and decrease Saturation accordingly
-	if (newHSV[2] > 1):
-		H = newHSV[0] # hue
-		
-		# decrease Saturation
-		if (H < 1.0 / 6):
-			newHSV[1] = (r + g + b - k) / (b + g - 6 * g * H)
-		elif (H < 2.0 / 6):
-			newHSV[1] = (r + g + b - k) / (b - r + 6 * r * H) 
-		elif (H < 3.0 / 6):
-			newHSV[1] = (r + g + b - k) / (r + 3 * b - 6 * b * H)
-		elif (H < 4.0 / 6):
-			newHSV[1] = (r + g + b - k) / (r - 3 * g + 6 * g * H)
-		elif (H < 5.0 / 6):
-			newHSV[1] = (r + g + b - k) / (g + 5 * r - 6 * r * H)
-		else:
-			newHSV[1] = (r + g + b - k) / (g - 5 * b + 6 * b * H)
-		
-		# Value is capped to 1
-		newHSV[2] = 1.0
-	
-	# get new pixel RGB value
-	newRGB = hsv_to_rgb(*newHSV)
-	newPixel = tuple([int(x * 255) for x in newRGB] + [255])
-	return tuple(newPixel)
+# used for avoiding division by zero
+EPSILON = 1e-10
 
 
+# gets a new image that normalizes the grayscale luminance value for each pixel of the image
+def scale_rgb(image):
+    # calculate the target luminance for each pixel
+    target_luminance = np.min(LUMINANCE_WEIGHTS)
 
-# ===== Read image from file =====
-extensionIndex = imagePath.find('.') # position of the extension in the string
-image = Image.open(imagePath) # load image
-pixels = image.load() # load image pixels
+    # add a small epsilon to each pixel channel so it does not result in divide by zero
+    adjusted_image = image + EPSILON
 
+    # calculate the current luminance for each pixel
+    current_luminance = np.tensordot(adjusted_image, LUMINANCE_WEIGHTS, axes=([2], [0]))
 
+    # calculate the scale that need to be applied to current pixels
+    luminance_scale = (target_luminance / current_luminance)[:, :, np.newaxis]
 
-# ===== Create new image with normalized luminance for every pixel =====
-imageNew = Image.new(image.mode, image.size) # create new image
-pixelsNew = imageNew.load() # load new image pixels
+    # adjust the BGR channels based on the luminance difference
+    adjusted_image = (adjusted_image * luminance_scale * 255.0).astype(np.uint8)
 
-# loop through the pixels and set the pixels of the new image
-for i in range(imageNew.size[0]):
-	print("Editing column", i, "of", imageNew.size[0])
-	for j in range(imageNew.size[1]):	
-		pixelsNew[i, j] = normalize(pixels[i, j], 0.5)
-
-# show and save new image
-imageNew.show()
-imageNew.save(imagePath[ : extensionIndex] + '2' + imagePath[extensionIndex : ])
-imageNew.close()
+    return adjusted_image
 
 
-# ===== Create new image with randomized color, but keeping the luminance value for each pixel =====
-imageNew = Image.new(image.mode, image.size) # create new image
-pixelsNew = imageNew.load() # load new image pixels
+# gets a new image that randomizes the pixel colors for each pixel of the image, but keeping the same luminance
+def randomize_rgb(image):
+    # calculate the target luminance for each pixel
+    target_luminance = np.tensordot(image / 255.0, LUMINANCE_WEIGHTS, axes=([2], [0]))
 
-# loop through the pixels and set the pixels of the new image
-for i in range(imageNew.size[0]):
-	print("Editing column", i, "of", imageNew.size[0])
-	for j in range(imageNew.size[1]):
-		randomPixel = [randrange(0, 256) for _ in range(3)] # randomize random pixel
-		pixelsNew[i, j] = normalize(randomPixel, luminance(pixels[i, j]))
+    # generate a new adjusted image
+    adjusted_image = np.zeros(image.shape)
 
-# show and save new image
-imageNew.show()
-imageNew.save(imagePath[ : extensionIndex] + '3' + imagePath[extensionIndex : ])
-imageNew.close()
+    # randomize B channel.  Make sure the target luminance can be met
+    b_minimum = (target_luminance - np.sum(LUMINANCE_WEIGHTS[1:])) / LUMINANCE_WEIGHTS[
+        0
+    ]
+    b_maximum = target_luminance / LUMINANCE_WEIGHTS[0]
+    b_range = np.clip(np.stack((b_minimum, b_maximum), axis=2), 0.0, 1.0)
+    adjusted_image[:, :, 0] = np.random.uniform(b_range[..., 0], b_range[..., 1])
+
+    # randomize G channel.  Make sure the target luminance can be met
+    g_minimum = (
+        target_luminance
+        - adjusted_image[:, :, 0] * LUMINANCE_WEIGHTS[0]
+        - LUMINANCE_WEIGHTS[2]
+    ) / LUMINANCE_WEIGHTS[1]
+    g_maximum = (
+        target_luminance - adjusted_image[:, :, 0] * LUMINANCE_WEIGHTS[0]
+    ) / LUMINANCE_WEIGHTS[1]
+    g_range = np.clip(np.stack((g_minimum, g_maximum), axis=2), 0.0, 1.0)
+    adjusted_image[:, :, 1] = np.random.uniform(g_range[..., 0], g_range[..., 1])
+
+    # the R channel is determined because the target luminance must be met
+    adjusted_image[:, :, 2] = (
+        target_luminance
+        - np.sum(
+            adjusted_image[..., :2] * LUMINANCE_WEIGHTS[np.newaxis, np.newaxis, :2],
+            axis=2,
+        )
+    ) / LUMINANCE_WEIGHTS[2]
+
+    # scale the image pixels
+    adjusted_image = (adjusted_image * 255.0).astype(np.uint8)
+
+    return adjusted_image
 
 
-# close image
-image.close()
+# load the BGR image
+extension_index = IMAGE_PATH.find(".")  # position of the extension in the string
+image = cv2.imread(IMAGE_PATH)
+
+# create new image with normalized luminance for every pixel
+normalized_luminance_image = scale_rgb(image)
+normalized_luminance_image_path = (
+    f"{IMAGE_PATH[:extension_index]}_normalized_luminance{IMAGE_PATH[extension_index:]}"
+)
+cv2.imwrite(normalized_luminance_image_path, normalized_luminance_image)
+preview_image = Image.open(normalized_luminance_image_path)  # load image
+preview_image.show()
+preview_image.close()
+
+# create new image with normalized luminance for every pixel
+randomize_pixels_image = randomize_rgb(image)
+randomize_pixels_image_path = (
+    f"{IMAGE_PATH[:extension_index]}_randomize_pixels{IMAGE_PATH[extension_index:]}"
+)
+cv2.imwrite(randomize_pixels_image_path, randomize_pixels_image)
+preview_image = Image.open(randomize_pixels_image_path)  # load image
+preview_image.show()
+preview_image.close()
